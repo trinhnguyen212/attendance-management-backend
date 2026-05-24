@@ -1,74 +1,35 @@
-# Build Client Stage
-FROM node:alpine AS node-builder
-WORKDIR /app
-COPY frontend .
-RUN cp -n .env.example .env && \
-    npm install && npm run build
+FROM php:8.2-cli
 
-# Laravel Stage
-FROM php:8.2-fpm-alpine AS php-laravel
-
-RUN apk add --no-cache \
-    freetype-dev \
-    libjpeg-turbo-dev \
+# Install dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    unzip \
+    curl \
     libpng-dev \
-    libwebp-dev \
-    libxpm-dev \
-    icu-dev \
+    libonig-dev \
     libxml2-dev \
-    libzip-dev \
-    oniguruma-dev \
-    zlib-dev \
-    nginx \
-    && docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp \
-    && docker-php-ext-install -j$(nproc) gd intl opcache pdo pdo_mysql zip ftp
+    zip
 
-# Redis extension
-RUN apk --no-cache add pcre-dev ${PHPIZE_DEPS} \
-    && pecl install redis \
-    && docker-php-ext-enable redis \
-    && apk del pcre-dev ${PHPIZE_DEPS} \
-    && rm -rf /tmp/pear
+# Install PHP extensions
+RUN docker-php-ext-install pdo pdo_mysql mbstring exif pcntl bcmath gd
 
-WORKDIR /var/www/school-attendance-app
-COPY backend .
+# Install Composer
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
-# Install Composer dependencies
-COPY --from=composer:latest /usr/bin/composer /usr/local/bin/composer
-RUN composer install --no-cache --optimize-autoloader --no-dev && \
-    php artisan config:clear && \
-    php artisan event:clear && \
-    php artisan route:clear && \
-    php artisan view:clear && \
-    rm -f storage/logs/laravel.log && \
-    rm -rf storage/framework/sessions/* && \
-    php artisan optimize && \
-    rm /usr/local/bin/composer
+# Set working directory
+WORKDIR /app
 
-# Copy the built frontend assets to the Laravel public directory
-COPY --from=node-builder /app/dist /var/www/school-attendance-app/public
-COPY --from=node-builder /app/dist/index.html /var/www/school-attendance-app/resources/views/index.blade.php
+# Copy Laravel project
+COPY . .
 
-# Grant permissions
-RUN chown -R www-data:www-data /var/www/school-attendance-app/storage /var/www/school-attendance-app/bootstrap/cache
-RUN chown -R 775 /var/www/school-attendance-app/storage/logs
+# Install Laravel dependencies
+RUN composer install --no-dev --optimize-autoloader
 
-# Handle uploads
-RUN mkdir -p /var/www/school-attendance-app/storage/uploads && \
-    chown -R www-data:www-data /var/www/school-attendance-app/storage/uploads && \
-    chmod -R 775 /var/www/school-attendance-app/storage/uploads
+# Set permissions
+RUN chmod -R 775 storage bootstrap/cache
 
-# Extra stuff: config, logging,...
-COPY ./docker/php/php.ini /usr/local/etc/php/php.ini
-COPY ./docker/nginx/default.conf /etc/nginx/http.d/default.conf
-COPY ./docker/cronjob /etc/crontabs/root
-COPY ./docker/php/zz-docker.conf /usr/local/etc/php-fpm.d/zz-docker.conf
-COPY ./docker/php/docker-php-ext-opcache.ini /usr/local/etc/php/conf.d/docker-php-ext-opcache.ini
+# Expose Render port
+EXPOSE 10000
 
-# Handle php-fpm via unix socket
-RUN mkdir -p /var/run/php-fpm && \
-    chown -R www-data:www-data /var/run/php-fpm
-
-EXPOSE 80
-
-CMD ["sh", "-c", "php-fpm & nginx -g 'daemon off;' & crond -f"]
+# Start Laravel
+CMD php artisan serve --host=0.0.0.0 --port=10000
